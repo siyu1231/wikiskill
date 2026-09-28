@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wikiskill"
+version = "0.0.1"
+description = "WikiSkill: compiling agent experience into persistent knowledge for skill evolution (agent-agnostic reimplementation, arXiv:2608.27454)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "wikiskill contributors" }]
+keywords = ["agents", "skills", "wiki", "skill-evolution", "llm"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "openai>=1.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-timeout>=2"]
+test = ["pytest>=8", "pytest-timeout>=2"]
+
+[project.scripts]
+wikiskill = "wikiskill.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 120
