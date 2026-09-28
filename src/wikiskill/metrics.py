@@ -1,4 +1,8 @@
-"""Accuracy, paired bootstrap significance (1000 iters), stratified macro-average.
+"""Accuracy scoring (P1). Paired bootstrap + macro-average land here in P3 (paper App. C)."""
+from __future__ import annotations
 
-TODO(P3). See paper App. C and design.md §4 #2.
-"""
+
+def accuracy(traces: list[dict]) -> float:
+    if not traces:
+        return 0.0
+    return sum(1 for t in traces if t.get("pass")) / len(traces)
