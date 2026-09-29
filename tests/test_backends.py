@@ -18,11 +18,16 @@ def test_registry():
 # ---------------- mock: inference rollout ----------------
 def test_mock_rollout_needs_injected_skill(tmp_path):
     b = get_backend("mock")
-    r = b.run(str(tmp_path), "## Task\nCompute 23 * 17 ...", tag="t1")
-    assert "ANSWER: idk" in r.stdout
-    r2 = b.run(str(tmp_path), "### skill: multiply\nmultiply the two numbers\n## Task\nCompute 23 * 17",
+    # convention-dependent bench: without the skill the plain number is WRONG
+    r = b.run(str(tmp_path),
+              "Compute 23 * 17. Reply using the team answer format defined in your skills.",
+              tag="t1")
+    assert "ANSWER: 391" in r.stdout
+    r2 = b.run(str(tmp_path),
+               "### skill: multiply\nAnswer format: product=<value>\n"
+               "Compute 23 * 17. Reply using the team answer format defined in your skills.",
                tag="t2")
-    assert "ANSWER: 391" in r2.stdout
+    assert "ANSWER: product=391" in r2.stdout
 
 
 # ---------------- mock: actor roles ----------------

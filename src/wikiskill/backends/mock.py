@@ -3,9 +3,9 @@
 Two behaviors in one, selected by the prompt it receives:
 - ACTOR prompts (carry the Maintainer/Proposer system prompt): return canned
   JSON so the full loop — patches, proposals, gating — runs offline.
-- TASK prompts (rollouts): answered correctly iff the injected active-skill
-  text contains the phrase the task needs. Lets the full CLI loop run with
-  zero API cost and demonstrates accept + reject paths.
+- TASK prompts (rollouts): answered in the team format ONLY iff the injected
+  active-skill text contains the phrase the task needs (mirrors the
+  convention-dependent demo bench). Zero API cost, demonstrates accept+reject.
 """
 from __future__ import annotations
 
@@ -15,24 +15,28 @@ import re
 
 from .base import RunResult, register
 
-# task prompt marker -> skill phrase that unlocks a correct answer
-RULES = [("*", "multiply"), ("+", "add")]
+# operator -> (skill phrase that unlocks it, expected-answer template)
+RULES = {
+    "*": ("multiply", "product={value}"),
+    "+": ("add", "sum={value}"),
+}
 
 MAINTAINER_CANNED = {
     "patches": [{
         "file": "patterns/multiplication.md", "op": "append",
-        "text": "# Multiplication failures\nEvidence: agents answer 'idk' on a*b "
-                "tasks unless a multiply skill is active.\n",
+        "text": "# Multiplication format failures\nEvidence: agents computed the right "
+                "number but never emitted the required product=<value> format.\n",
     }],
-    "log_summary": "Root cause: no multiplication strategy in the active skill set.",
+    "log_summary": "Root cause: no skill states the answer-format convention.",
 }
 
 CREATE_MULTIPLY = {
     "proposal": {
         "action": "create", "skill": "multiply",
-        "content": "# Multiply\n\nTo compute a * b, multiply the two numbers "
-                   "and reply with the product.\n",
-        "rationale": "train traces answered idk on every multiplication task",
+        "content": "# Multiply\n\nMultiply the two numbers.\n\n"
+                   "Answer format for multiplication results: `product=<value>` "
+                   "(exact prefix, no spaces).\n",
+        "rationale": "train traces failed on the required product= format",
         "source_patterns": ["multiplication"],
     }
 }
@@ -51,7 +55,7 @@ def _expected_from_prompt(prompt: str) -> tuple[str, str] | None:
     if not m:
         return None
     a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
-    return (op, str(a * b if op == "*" else a + b))
+    return op, str(a * b if op == "*" else a + b)
 
 
 class MockBackend:
@@ -81,9 +85,9 @@ class MockBackend:
         answer = "idk"
         if exp is not None:
             op, value = exp
-            need = RULES[0][1] if op == "*" else RULES[1][1]
-            if need in prompt:      # skill text was injected into the prompt
-                answer = value
+            need, tpl = RULES[op]
+            # correct only if the convention-carrying skill was injected
+            answer = tpl.format(value=value) if need in prompt else value
         elif "?" in prompt:
             answer = "42"
         out = f"(mock) reasoning about: {prompt.splitlines()[0][:60]}\nANSWER: {answer}"

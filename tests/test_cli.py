@@ -67,10 +67,10 @@ def test_run_task_debug(tmp_path, capsys):
     ws = str(tmp_path / "ws")
     main(["init", ws])
     capsys.readouterr()
-    # no skills yet -> mock fails -> exit 1 (useful signal for debugging)
+    # no skills yet -> format convention unknown -> exit 1 (useful signal)
     assert main(["run-task", ws, "d01"]) == 1
     out = capsys.readouterr().out
-    assert "expected  : '391'" in out and "FAIL" in out
+    assert "expected  : 'product=391'" in out and "FAIL" in out
     import pytest
     with pytest.raises(SystemExit, match="unknown task"):
         main(["run-task", ws, "zzz"])
