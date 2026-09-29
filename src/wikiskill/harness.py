@@ -1,10 +1,22 @@
-"""Task loading, splits, rollout scoring (P2 wires real backends; P1 uses scripted runners)."""
+"""Task loading, splits, prompt assembly, answer parsing, backend rollout.
+
+Shared by ALL backends (design.md §3): prompt building with full skill
+injection (paper §3.2.1), the ANSWER: output contract, and trace
+normalization live here — not in adapters.
+"""
 from __future__ import annotations
 
 import json
+import os
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from .backends.base import AgentBackend
+from .prompts import INFERENCE_SYSTEM
+
+ANSWER_HINT = "\n\nEnd your reply with one line exactly of the form: ANSWER: <answer>"
 
 
 @dataclass
@@ -27,6 +39,13 @@ def load_tasks(path: str | Path) -> list[Task]:
     return tasks
 
 
+def save_tasks(tasks: list[Task], path: str | Path) -> None:
+    Path(path).write_text(
+        "\n".join(json.dumps({"id": t.id, "prompt": t.prompt, "expected": t.expected},
+                             ensure_ascii=False) for t in tasks) + "\n",
+        encoding="utf-8")
+
+
 def split_tasks(tasks: list[Task], val_ratio: float = 0.34, seed: int = 42) -> tuple[list[Task], list[Task]]:
     """Deterministic D_train / D_val split (design.md §4 #4: gating must never see train)."""
     idx = list(range(len(tasks)))
@@ -46,6 +65,82 @@ def make_trace(task: Task, answer: str) -> dict:
         "answer": answer,
         "pass": _norm(answer) == _norm(task.expected),
     }
+
+
+def build_prompt(skills_ctx: str, task: Task) -> str:
+    """Full-injection setting: entire active skill text goes into the prompt
+    (paper §3.2.1) — no retrieval, no symlinked skill dir for the inference run."""
+    sys = INFERENCE_SYSTEM.format(skills=skills_ctx.strip() or "(no active skills)")
+    return f"{sys}\n## Task\n{task.prompt}{ANSWER_HINT}"
+
+
+_ANSWER_RE = re.compile(r"^\s*ANSWER:\s*(.*?)\s*$", re.I | re.M)
+
+
+def parse_answer(stdout: str) -> str:
+    """Last ANSWER: line wins; else last non-empty line; else empty."""
+    if not stdout:
+        return ""
+    matches = _ANSWER_RE.findall(stdout)
+    if matches:
+        return matches[-1].strip()
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+class BackendRollout:
+    """rollout(tasks, skills_ctx, iteration, split) -> traces — the single
+    function the orchestrator knows about (design.md §3).
+
+    Inference runs get workdir = <ws>/runs/work, a NEUTRAL cwd with no view of
+    raw/ or wiki/ (paper §3.2: inference agent must not access the wiki; the
+    only skill signal is the injected prompt).
+    """
+
+    def __init__(self, backend: AgentBackend, ws_root: str,
+                 max_turns: int = 15, run_budget: int = 300,
+                 workdir: str | None = None, verbose: bool = True):
+        self.backend = backend
+        self.ws_root = ws_root
+        self.max_turns = max_turns
+        self.run_budget = run_budget
+        self.workdir = workdir or os.path.join(ws_root, "runs", "work")
+        self.verbose = verbose
+
+    def __call__(self, tasks: list[Task], skills_ctx: str, iteration: int, split: str) -> list[dict]:
+        os.makedirs(self.workdir, exist_ok=True)
+        traces: list[dict] = []
+        for task in tasks:
+            prompt = build_prompt(skills_ctx, task)
+            tag = f"iter-{iteration:04d}-{split}-{task.id}"
+            # harness-managed runs/ layout (design.md §8): every backend gets
+            # the same on-disk artifacts for auditability, adapters only exec.
+            run_dir = os.path.join(self.ws_root, "runs", tag)
+            os.makedirs(run_dir, exist_ok=True)
+            with open(os.path.join(run_dir, "query.txt"), "w", encoding="utf-8") as f:
+                f.write(prompt)
+            res = self.backend.run(self.ws_root, prompt, tag=tag,
+                                   max_turns=self.max_turns, run_budget=self.run_budget,
+                                   workdir=self.workdir)
+            stdout_path = res.stdout_path or os.path.join(run_dir, "stdout.txt")
+            if not res.stdout_path:
+                with open(stdout_path, "w", encoding="utf-8") as f:
+                    f.write(res.stdout)
+            answer = parse_answer(res.stdout)
+            trace = make_trace(task, answer)
+            trace["run"] = {
+                "backend": getattr(self.backend, "name", "?"),
+                "tag": tag,
+                "exit": res.exit_code,
+                "duration_s": res.duration_s,
+                "session": res.session_file,
+            }
+            traces.append(trace)
+            if self.verbose:
+                mark = "PASS" if trace["pass"] else "FAIL"
+                print(f"  [{split} {iteration}] {task.id} {mark} "
+                      f"ans={answer!r} ({res.duration_s}s)")
+        return traces
 
 
 def _norm(s: str) -> str:

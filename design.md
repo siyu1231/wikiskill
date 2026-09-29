@@ -119,3 +119,37 @@ src/wikiskill/
 - Integration: full loop with `MockLLM` + fixture tasks — no network, deterministic.
 - Backend smoke: each adapter has a `dry-run` mode that validates isolation + transcript
   normalization without calling a model.
+
+## 8. Design decisions (2026-09-29, user-reviewed)
+
+### 8.1 Runner 统一：三个角色同一个 `run(prompt, system)` 接口
+
+Maintainer / Proposer / Inference 不再默认分两条 LLM 通路：
+
+- `runner = "backend"`（**默认**）：三个角色全走 agent CLI——复用 agent 自己的凭证，
+  零额外配置，且符合论文原意（论文中 M_WM、M_P 与 Inference 同为 agent）。
+  实现为 `BackendRunner`：把 system+messages 渲染成单次 oneshot prompt 交给 backend。
+- `runner = "direct"`（可选优化）：Maintainer/Proposer 直连 OpenAI 兼容端点，
+  用于省 token / 用不同模型（`--llm-base/--llm-key/--llm-model`）。
+
+### 8.2 CLI 形态的理由：核心是库，外壳是 CLI，文件是状态
+
+1. 编排对象本身是 CLI agent（hermes chat / claude -p / codex exec），子进程+stdout 是跨
+   agent 最通用接口；
+2. 演化循环是批处理（跑完退出），不是在线服务；
+3. 状态是文件系统里的 markdown/json——可读、可 git 管、可 diff，支撑"wiki 可审计"；
+4. **裁判权必须在被训练者之外**：gating/回滚/审计是独立父进程的代码路径，agent 只是
+   启动者或子进程，循环状态不进 agent 的 context。
+
+Web UI（`wikiskill serve`）后置到 P4；不做 MCP/插件（违背 agent-agnostic）。
+
+### 8.3 分层执法：什么形态放哪里
+
+- **演化引擎（循环、门控、回滚、审计）= 代码/CLI**：机械不变量（append-only raw、
+  严格 `>`、快照恢复）由测试锁死，靠 prose 嘱托会随 context 漂移；
+- **Maintainer/Proposer 角色指令 = prose prompt（skill 形态的本职）**：本来就是给模型的
+  说明书，backend 模式下即注入的 system prompt；
+- **入口 UX = 可选薄 skill**（P3+）：`/wikiskill` skill 当遥控器调 `wikiskill evolve`。
+  skill 也可打包 scripts/ 分发（PEP 723），与 CLI 是同一份库的不同包装——包装不改变
+  执法者仍是代码这一事实；防御点是 SKILL.md 写死"workspace 写操作必须经脚本"，
+  且状态全落盘、`wikiskill status` 可验污染。
