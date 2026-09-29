@@ -93,17 +93,29 @@ WARN（判分风险、N 偏小）逐条看过再决定。
 
 ## Procedure
 
-0. **建/验任务集**（已有合格 tasks.jsonl 则跳过）：按"任务规范"生成任务，expected 用
+**两条硬性交互规则（不可跳过）**：
+- **规则 A — 开场必问**：没有向用户问全"①要什么行为 ②怎么算成功（判分标准）
+  ③现有 skill/失败素材在哪"这三点之前，**不许出题、不许跑任何命令**。
+- **规则 B — 真跑必确认**：hermes 真实 `evolve`（花时间和 token）之前，必须停下来
+  向用户说明预估成本并**拿到明确同意**；mock 冒烟除外。
+
+0. **开场采访**（规则 A）：一次性问齐三个问题（目标行为 / 判分标准 / 现有素材），
+   用户已给全的可跳问；用户说"直接用默认"时把默认值复述一遍再往下走。
+   → completion criterion: 三个问题都有答案（或用户显式授权用默认）。
+1. **建/验任务集**（已有合格 tasks.jsonl 则跳过）：按"任务规范"生成任务，expected 用
    工具核实，然后 `tasks check <file>` → completion criterion: 输出 `0 failed`
    （WARN 逐条确认可接受）。
-1. `doctor <ws>`（或不带 ws 的全局检查）→ completion criterion: `0 failed`。
+2. `doctor <ws>`（或不带 ws 的全局检查）→ completion criterion: `0 failed`。
    LLM 端点可用性加 `--probe-llm`（GET /models，免费）。
-2. 没有 workspace 就 `init`（默认 12 个 demo 任务，train 8 / val 4）→ 输出含
-   `tasks : 12 total -> train 8 / val 4`。
-3. `evolve <ws> --iters 3`（后台跑）→ completion criterion: 打印 iter 表 +
-   `final R_best=... accepted=N/M`。
-4. `status <ws>` 核对 → `skills/` 非空、`gating` 有 Accepted 记录。
-5. 给用户展示产物：`wiki/skill-impact.md`（提案+diff+分数+结论）、
+3. 建 workspace：`init <ws> --tasks <file> --backend mock` 先冒烟——
+   `evolve <ws> --iters 2`（mock 秒级零成本）→ completion criterion: 打印 iter 表、
+   产物落盘。
+4. **（规则 B）向用户报告冒烟结果，说明真实 evolve 的预估成本**（实测 ~8 分钟/3 iters、
+   ~50 次 agent 调用），**用户明确同意后**再 `init <ws-real> --tasks <file>
+   --backend hermes` + `evolve <ws-real> --iters N`（后台跑）→ completion criterion:
+   打印 iter 表 + `final R_best=... accepted=N/M`。
+5. `status <ws-real>` 核对 → `skills/` 非空、`gating` 有 Accepted 记录。
+6. 给用户展示产物：`wiki/skill-impact.md`（提案+diff+分数+结论）、
    `wiki/patterns/*.md`（沉淀的模式页）、`skills/<name>/SKILL.md`（演化出的 skill，
    带 YAML frontmatter，可直接拷进 hermes skills 目录使用）。
 
