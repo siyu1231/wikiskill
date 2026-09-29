@@ -15,6 +15,8 @@ from . import backends as _backends  # noqa: F401  (registers adapters)
 from .backends import available_backends, get_backend
 from .agents import SkillProposer, WikiMaintainer
 from .demo import write_demo_tasks
+from .doctor import checks as doctor_checks
+from .doctor import report as doctor_report
 from .harness import BackendRollout, load_tasks, split_tasks
 from .orchestrator import Orchestrator
 from .runners import make_runner
@@ -197,6 +199,12 @@ def _now() -> int:
     return int(time.time())
 
 
+# ---------------------------------------------------------------- doctor
+def cmd_doctor(args: argparse.Namespace) -> int:
+    cs = doctor_checks(args.dir, probe_llm=args.probe_llm)
+    return doctor_report(cs, args.dir)
+
+
 # ---------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="wikiskill",
@@ -231,9 +239,15 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("dir")
     pr.add_argument("task_id")
 
+    pd = sub.add_parser("doctor", help="environment self-check (package/backends/workspace/endpoint)")
+    pd.add_argument("dir", nargs="?", help="workspace to inspect (omit for global checks only)")
+    pd.add_argument("--probe-llm", action="store_true",
+                    help="GET {base_url}/models to verify the direct LLM endpoint")
+
     args = p.parse_args(argv)
     handler = {"init": cmd_init, "status": cmd_status,
-               "evolve": cmd_evolve, "run-task": cmd_run_task}[args.cmd]
+               "evolve": cmd_evolve, "run-task": cmd_run_task,
+               "doctor": cmd_doctor}[args.cmd]
     return handler(args)
 
 
