@@ -99,7 +99,9 @@ def checks(ws_dir: str | None = None, probe_llm: bool = False) -> list[Check]:
             try:
                 cfg = json.loads(cfgp.read_text(encoding="utf-8"))
                 backend_name = cfg.get("backend", "mock")
-                out.append(Check("workspace", True, f"{ws}  backend={backend_name}"))
+                out.append(Check("workspace", True, f"{ws}  backend={backend_name}"
+                                 + (f"  toolsets={cfg['toolsets']}" if cfg.get("toolsets")
+                                    else "  toolsets=(adapter default)")))
             except Exception as e:  # noqa: BLE001
                 out.append(Check("workspace", False, f"workspace.json unreadable: {e}"))
 

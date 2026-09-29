@@ -28,10 +28,11 @@ def render_prompt(messages: list[dict], system: str | None = None) -> str:
 
 class BackendRunner(LLM):
     def __init__(self, backend: AgentBackend, ws_root: str,
-                 toolsets: str = "file,terminal", max_turns: int = 12,
+                 toolsets: str | None = None, max_turns: int = 12,
                  run_budget: int = 300, workdir: str | None = None):
         self.backend = backend
         self.ws_root = ws_root
+        # None = adapter's own default (core never encodes adapter vocab)
         self.toolsets = toolsets
         self.max_turns = max_turns
         self.run_budget = run_budget
@@ -48,12 +49,12 @@ class BackendRunner(LLM):
 
 
 def make_runner(name: str, backend: AgentBackend | None, ws_root: str,
-                llm_cfg: dict | None = None) -> LLM:
+                llm_cfg: dict | None = None, toolsets: str | None = None) -> LLM:
     """Build the actor runner. CLI params > workspace.json > environment."""
     if name == "backend":
         if backend is None:
             raise ValueError("runner='backend' needs a backend")
-        return BackendRunner(backend, ws_root)
+        return BackendRunner(backend, ws_root, toolsets=toolsets)
     if name == "direct":
         cfg = llm_cfg or {}
         llm = OpenAICompatLLM(model=cfg.get("model") or "gpt-4o-mini",

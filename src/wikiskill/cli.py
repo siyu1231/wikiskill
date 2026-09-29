@@ -31,6 +31,7 @@ DEFAULTS = {
     "seed": 42,
     "max_turns": 15,
     "run_budget": 300,
+    "toolsets": "",
     "llm": {"base_url": "", "api_key": "", "model": ""},
 }
 
@@ -75,7 +76,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
         n = write_demo_tasks(ws / "tasks.jsonl")
 
-    cfg = {**DEFAULTS, "backend": args.backend, "seed": args.seed}
+    cfg = {**DEFAULTS, "backend": args.backend, "seed": args.seed,
+           "toolsets": args.toolsets or ""}
     _save_cfg(ws, cfg)
 
     backend = get_backend(cfg["backend"])
@@ -85,6 +87,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     train, val = split_tasks(tasks, seed=cfg["seed"])
     print(f"workspace : {ws}")
     print(f"backend   : {cfg['backend']} (available: {', '.join(available_backends())})")
+    if cfg["toolsets"]:
+        print(f"toolsets  : {cfg['toolsets']}  (adapter vocabulary)")
     print(f"tasks     : {n} total -> train {len(train)} / val {len(val)} "
           f"(seed {cfg['seed']}, held-out for gating)")
     print("next      : wikiskill evolve " + str(args.dir))
@@ -113,7 +117,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             r_best = line.split(":", 1)[1].strip()
 
     print(f"workspace : {ws}")
-    print(f"backend   : {cfg['backend']}    runner: {cfg['runner']}    seed: {cfg['seed']}")
+    print(f"backend   : {cfg['backend']}    runner: {cfg['runner']}    seed: {cfg['seed']}"
+          + (f"    toolsets: {cfg['toolsets']}" if cfg.get("toolsets") else ""))
     print(f"raw/      : {len(raw)} traces  "
           + ", ".join(f"{k}:{v}" for k, v in sorted(per_iter.items())))
     print(f"wiki/     : {len(w.list_patterns())} patterns, "
@@ -143,6 +148,9 @@ def cmd_evolve(args: argparse.Namespace) -> int:
         cfg["llm"]["api_key"] = args.llm_key
     if args.llm_model:
         cfg["llm"]["model"] = args.llm_model
+    if args.toolsets:
+        cfg["toolsets"] = args.toolsets
+    toolsets = cfg.get("toolsets") or None   # None -> adapter default
 
     w = Workspace.open(str(ws))
     backend = get_backend(cfg["backend"])
@@ -152,14 +160,17 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     train, val = split_tasks(tasks, seed=cfg["seed"])
 
     rollout = BackendRollout(backend, str(ws), max_turns=cfg["max_turns"],
-                             run_budget=cfg["run_budget"], verbose=not args.quiet)
-    runner = make_runner(cfg["runner"], backend, str(ws), cfg.get("llm"))
+                             run_budget=cfg["run_budget"], verbose=not args.quiet,
+                             toolsets=toolsets)
+    runner = make_runner(cfg["runner"], backend, str(ws), cfg.get("llm"),
+                         toolsets=toolsets)
     skills = SkillSet(w.skills_dir)
     maintainer = WikiMaintainer(runner, w)
     proposer = SkillProposer(runner, w, skills)
     orch = Orchestrator(w, maintainer, proposer, rollout)
 
-    print(f"evolve    : {ws}  backend={cfg['backend']} runner={cfg['runner']}")
+    print(f"evolve    : {ws}  backend={cfg['backend']} runner={cfg['runner']}"
+          + (f" toolsets={toolsets}" if toolsets else ""))
     print(f"data      : train {len(train)} / val {len(val)}   iters<= {args.iters}")
     t0 = _now()
     res = orch.evolve(train, val, max_iters=args.iters)
@@ -186,7 +197,8 @@ def cmd_run_task(args: argparse.Namespace) -> int:
     backend = get_backend(cfg["backend"])
     backend.bootstrap(str(ws))
     rollout = BackendRollout(backend, str(ws), max_turns=cfg["max_turns"],
-                             run_budget=cfg["run_budget"])
+                             run_budget=cfg["run_budget"],
+                             toolsets=cfg.get("toolsets") or None)
     skills_ctx = SkillSet(w.skills_dir).full_context()
     traces = rollout([tasks[args.task_id]], skills_ctx, 0, "debug")
     t = traces[0]
@@ -226,6 +238,10 @@ def main(argv: list[str] | None = None) -> int:
     pi.add_argument("--backend", default="mock", choices=available_backends())
     pi.add_argument("--tasks", help="own tasks.jsonl (default: bundled demo bench)")
     pi.add_argument("--seed", type=int, default=42, help="train/val split seed")
+    pi.add_argument("--toolsets", default="",
+                    help="toolset vocabulary for the examinee, in the adapter's own "
+                         "syntax (e.g. hermes: terminal,file,vision). Empty = adapter "
+                         "default (least privilege: no web/skills)")
     pi.add_argument("--force", action="store_true")
 
     ps = sub.add_parser("status", help="show workspace layers, skills, gating history")
@@ -241,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--llm-model", dest="llm_model")
     pe.add_argument("--max-turns", type=int, dest="max_turns")
     pe.add_argument("--run-budget", type=int, dest="run_budget")
+    pe.add_argument("--toolsets", dest="toolsets",
+                    help="override workspace toolsets for this run")
     pe.add_argument("-q", "--quiet", action="store_true")
 
     pr = sub.add_parser("run-task", help="run one task once (debug rollout)")

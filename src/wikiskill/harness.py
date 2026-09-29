@@ -106,13 +106,16 @@ class BackendRollout:
 
     def __init__(self, backend: AgentBackend, ws_root: str,
                  max_turns: int = 15, run_budget: int = 300,
-                 workdir: str | None = None, verbose: bool = True):
+                 workdir: str | None = None, verbose: bool = True,
+                 toolsets: str | None = None):
         self.backend = backend
         self.ws_root = ws_root
         self.max_turns = max_turns
         self.run_budget = run_budget
         self.workdir = workdir or os.path.join(ws_root, "runs", "work")
         self.verbose = verbose
+        # None = adapter's own default (core never encodes adapter vocab)
+        self.toolsets = toolsets
 
     def __call__(self, tasks: list[Task], skills_ctx: str, iteration: int, split: str) -> list[dict]:
         os.makedirs(self.workdir, exist_ok=True)
@@ -127,6 +130,7 @@ class BackendRollout:
             with open(os.path.join(run_dir, "query.txt"), "w", encoding="utf-8") as f:
                 f.write(prompt)
             res = self.backend.run(self.ws_root, prompt, tag=tag,
+                                   toolsets=self.toolsets,
                                    max_turns=self.max_turns, run_budget=self.run_budget,
                                    workdir=self.workdir)
             stdout_path = res.stdout_path or os.path.join(run_dir, "stdout.txt")

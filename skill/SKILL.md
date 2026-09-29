@@ -109,7 +109,10 @@ WARN（判分风险、N 偏小）逐条看过再决定。
    LLM 端点可用性加 `--probe-llm`（GET /models，免费）。
 3. 建 workspace：`init <ws> --tasks <file> --backend mock` 先冒烟——
    `evolve <ws> --iters 2`（mock 秒级零成本）→ completion criterion: 打印 iter 表、
-   产物落盘。
+   产物落盘。**工具集按任务类型配置**：纯文本任务用 adapter 默认即可；**图片/多模态
+   任务必须** `--toolsets terminal,file,vision`（hermes 词汇表；其他 adapter 用自家
+   语法，值写进 workspace.json，考生、医生、药剂师全程一致）。不配 = 最小权限
+   （无 vision、无 web），考生只能看到文本，图片题会全错。
 4. **（规则 B）向用户报告冒烟结果，说明真实 evolve 的预估成本**（实测 ~8 分钟/3 iters、
    ~50 次 agent 调用），**用户明确同意后**再 `init <ws-real> --tasks <file>
    --backend hermes` + `evolve <ws-real> --iters N`（后台跑）→ completion criterion:
@@ -127,6 +130,9 @@ WARN（判分风险、N 偏小）逐条看过再决定。
   bench 上强模型会 baseline 直接 1.0 → 什么都不演化（已实测）。
 - **别手改 `raw/` 与 `wiki/skill-impact.md`**：前者只增不删，后者仅 harness 可写。
 - **rejected 提案不回滚 wiki**，只回滚 skills/——这是论文语义，不是 bug。
+- **工具集（toolsets）没配 = 考生只有 terminal+file**：图片任务不加 vision 考生就
+  是瞎猜（实测 `ANSWER: NO_VISION`），演化出的 skill 全是垃圾。intake 时先问清
+  任务类型，`init --toolsets` 一次配好；`doctor`/`status` 会显示当前值。
 - evolve 有进度输出（每个任务 PASS/FAIL + 耗时），安静模式用 `-q`。
 - `evolve`/`run-task` 会先幂等 bootstrap 隔离 profile（`.hermes-home/`），不碰全局
   hermes 配置。
