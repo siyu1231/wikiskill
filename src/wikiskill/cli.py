@@ -21,6 +21,7 @@ from .harness import BackendRollout, load_tasks, split_tasks
 from .orchestrator import Orchestrator
 from .runners import make_runner
 from .skills import SkillSet
+from .tasks import check_tasks, report as tasks_report
 from .workspace import Workspace
 
 DEFAULTS = {
@@ -205,6 +206,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return doctor_report(cs, args.dir)
 
 
+# ---------------------------------------------------------------- tasks
+def cmd_tasks(args: argparse.Namespace) -> int:
+    if args.task_cmd == "check":
+        return tasks_report(check_tasks(args.file, seed=args.seed), args.file)
+    raise SystemExit(f"unknown tasks subcommand: {args.task_cmd}")
+
+
 # ---------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="wikiskill",
@@ -244,10 +252,16 @@ def main(argv: list[str] | None = None) -> int:
     pd.add_argument("--probe-llm", action="store_true",
                     help="GET {base_url}/models to verify the direct LLM endpoint")
 
+    pt = sub.add_parser("tasks", help="task-set tools (authoring spec validation)")
+    tsub = pt.add_subparsers(dest="task_cmd", required=True)
+    pc = tsub.add_parser("check", help="validate a tasks.jsonl before init/evolve")
+    pc.add_argument("file")
+    pc.add_argument("--seed", type=int, default=42, help="split seed for the preview")
+
     args = p.parse_args(argv)
     handler = {"init": cmd_init, "status": cmd_status,
                "evolve": cmd_evolve, "run-task": cmd_run_task,
-               "doctor": cmd_doctor}[args.cmd]
+               "doctor": cmd_doctor, "tasks": cmd_tasks}[args.cmd]
     return handler(args)
 
 

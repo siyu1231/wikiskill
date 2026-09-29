@@ -20,6 +20,7 @@ class Check:
     ok: bool
     detail: str
     skipped: bool = False
+    warn: bool = False   # advisory: reported, but does not fail the run
 
 
 # ------------------------------------------------------------- probes
@@ -158,8 +159,10 @@ def report(cs: list[Check], ws: str | None = None) -> int:
     print(f"wikiskill doctor{f'  ws={Path(ws).resolve()}' if ws else '  (global)'}")
     width = max(len(c.name) for c in cs)
     for c in cs:
-        tag = "SKIP" if c.skipped else ("OK  " if c.ok else "FAIL")
+        tag = "SKIP" if c.skipped else ("OK  " if c.ok else ("WARN" if c.warn else "FAIL"))
         print(f"[{tag}] {c.name:<{width}}  {c.detail}")
-    failed = [c for c in cs if not c.ok and not c.skipped]
-    print(f"---\n{len(cs)} checks: {len(cs) - len(failed)} ok, {len(failed)} failed")
+    n_warn = sum(1 for c in cs if c.warn and not c.skipped and not c.ok)
+    failed = [c for c in cs if not c.ok and not c.skipped and not c.warn]
+    print(f"---\n{len(cs)} checks: {len(cs) - len(failed) - n_warn} ok, "
+          f"{n_warn} warnings, {len(failed)} failed")
     return 1 if failed else 0

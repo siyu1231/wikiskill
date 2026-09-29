@@ -32,10 +32,17 @@ class Task:
 
 def load_tasks(path: str | Path) -> list[Task]:
     tasks = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             tasks.append(Task.from_dict(json.loads(line)))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            raise ValueError(
+                f"{path} line {n}: {e} — expected one JSON object per line: "
+                '{"id", "prompt", "expected"} (validate with: wikiskill tasks check)'
+            ) from e
     return tasks
 
 

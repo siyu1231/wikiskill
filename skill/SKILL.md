@@ -26,6 +26,8 @@ WikiSkill 把 agent 的失败轨迹编译成可复用的 skill（论文 arXiv:26
 
 **Don't use for:** 一次性问答；直接读 workspace 产物回答（用 `read_file` 查文件即可，
 不必启动 CLI）；给已有 workspace 手工改 `raw/` 或 `skill-impact.md`（只读，禁止写）。
+另一个 agent 必做的前置：用户要"优化/演化某个 skill"时，**先按下方任务规范建 tasks.jsonl
+并过 `tasks check`**，再进 evolve 流程——引擎不会替你出题。
 
 ## Prerequisites
 
@@ -53,13 +55,47 @@ mock 后端（零成本、秒级）适合先验证流程。
 | 命令 | 作用 |
 |---|---|
 | `wikiskill doctor [ws] [--probe-llm]` | 环境自检（先跑这个） |
+| `wikiskill tasks check <file.jsonl>` | 任务集体检（**写任务必过**，0 failed 才往下走） |
 | `wikiskill init <ws> [--backend mock\|hermes] [--tasks f.jsonl] [--seed N]` | 建 workspace + 划分 train/val |
 | `wikiskill evolve <ws> --iters N [-q]` | 跑 Algorithm 1 演化循环 |
 | `wikiskill status <ws>` | 三层状态 + 门控历史 + R_best |
 | `wikiskill run-task <ws> <task_id>` | 单任务调试 rollout（PASS 退 0 / FAIL 退 1） |
 
+## 任务规范（Task Spec）
+
+引擎只吃 `tasks.jsonl`，**不会替你生成任务**。优化 skill 的前提是先有一份合格任务集：
+
+**格式**（每行一个 JSON 对象）：
+
+```json
+{"id": "t01", "prompt": "Compute 23 * 17. Reply using the team answer format defined in your skills.", "expected": "product=391"}
+```
+
+- `id`：仅 `[A-Za-z0-9._-]`、必须唯一——它直接变成 `runs/` 下的目录名
+- `prompt`：自包含，答案由 prompt 唯一确定；"写一段话"类不可判任务不行
+- `expected`：**单行**；判分是精确字符串匹配（只归一大小写和空白——没有数值容差、
+  没有 regex、没有 LLM judge），别带句尾标点（`391.` 会输给 `391`）
+
+**规模**：≥2 条（否则划不出 val），**建议 ≥20**——val 占 34%，N=10 时 val 只有 3 条，
+门控分数一格跳 33%。
+
+**设计原则**（决定演化有没有东西可学）：
+
+1. 想让 skill 有东西可学 → **约定/格式/规则藏进 skill，不藏进 prompt**。prompt 明说
+   "格式见你的 skills"，否则强模型 baseline 直接 1.0 → 早停，循环空转（已实测）。
+2. **失败必须可归因**：一类任务失败要有共同根因，Maintainer 才能从 trace 沉淀出
+   pattern，Proposer 才有据可提。
+3. **出题人 ≠ 考生**：agent 写 `expected` 必须用工具算（代码/计算器）核实，不能心算，
+   你自己抽查几个——任务本身错了，演化出的 skill 也是错的。
+
+无论谁出题，`init --tasks` 之前必须 `wikiskill tasks check`：**0 failed 才继续**；
+WARN（判分风险、N 偏小）逐条看过再决定。
+
 ## Procedure
 
+0. **建/验任务集**（已有合格 tasks.jsonl 则跳过）：按"任务规范"生成任务，expected 用
+   工具核实，然后 `tasks check <file>` → completion criterion: 输出 `0 failed`
+   （WARN 逐条确认可接受）。
 1. `doctor <ws>`（或不带 ws 的全局检查）→ completion criterion: `0 failed`。
    LLM 端点可用性加 `--probe-llm`（GET /models，免费）。
 2. 没有 workspace 就 `init`（默认 12 个 demo 任务，train 8 / val 4）→ 输出含
