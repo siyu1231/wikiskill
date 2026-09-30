@@ -153,3 +153,36 @@ Web UI（`wikiskill serve`）后置到 P4；不做 MCP/插件（违背 agent-agn
   skill 也可打包 scripts/ 分发（PEP 723），与 CLI 是同一份库的不同包装——包装不改变
   执法者仍是代码这一事实；防御点是 SKILL.md 写死"workspace 写操作必须经脚本"，
   且状态全落盘、`wikiskill status` 可验污染。
+
+### 8.4 Selective metric：把"让模型自报不确定"编码进分数（2026-09-30）
+
+**需求**：所有题目标签确定，但允许模型弃权（三值输出 正/负/不确定）；目标是
+不确定尽可能少（覆盖率高）、给出的正负准确率尽可能高。这是 selective
+prediction（弃权学习），不是三值 ground truth。
+
+**为什么不改循环**：Algorithm 1 比较的只是一个标量 R，评分器本就是可插拔接口。
+缺的从来不是机制，是"答错 vs 弃权不对称"这个偏好没有被编码——exact-match 把两者
+同罚，等于只优化了二分类准确率。
+
+**实现**（`metrics.py`）：`metric` 配置进 workspace.json：
+
+- `exact`（默认，论文指标）：mean exact-match accuracy，行为逐位不变；
+- `selective`：`R = (correct − λ·abstain − μ·wrong) / N`，默认 λ=0.25、μ=1.0，
+  `--abstain-penalty / --wrong-penalty` 可调。
+
+  行为边界（可推导）：答对(+1) > 弃权(−λ) > 答错(−μ)；全弃权得 −λ，
+  而准确率 p 下作答得 `p − μ(1−p)`，两者交叉于 `p = (μ−λ)/(1+μ) ≈ 37.5%`
+  （λ=0.25, μ=1）——远低于正常模型准确率，**弃权永远不会泛滥**，只在"预计要错"
+  的题上有利可图，λ 就是"不确定尽可能少"的旋钮。
+
+**配套三件**（缺一则分数改了也白改）：
+1. **trace 加 `outcome` 字段**（correct|abstain|wrong，指标无关），弃权词表在
+   `metrics.ABSTAIN_RE`（verdict=unknown / 不确定 / idk / uncertain…）；
+2. **注入 scoring_note 给 Maintainer/Proposer**——否则药剂师按自己想象的指标优化；
+3. **分层采样按 outcome 交替**：≤5 失败名额里弃权和真错题都要露头，不能一类占满；
+   status/审计输出三元统计（coverage / abstain_rate / cond_acc）。
+
+**对论文的偏离**：仅指标（论文 = exact-match），机制（严格 `>` 门控、skills-only
+回滚、wiki 永不回滚、原子提案）一律不动；弃权策略由演化自己学出来（医生从错题
+总结"模型在哪类样本上总错"→ 药剂师发现这些题上弃权比答错涨分 → 教成基于特征的
+弃权规则），而不是手写进 prompt。

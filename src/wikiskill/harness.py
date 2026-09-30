@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .backends.base import AgentBackend
+from .metrics import is_abstain
 from .prompts import INFERENCE_SYSTEM
 
 ANSWER_HINT = "\n\nEnd your reply with one line exactly of the form: ANSWER: <answer>"
@@ -65,12 +66,18 @@ def split_tasks(tasks: list[Task], val_ratio: float = 0.34, seed: int = 42) -> t
 
 
 def make_trace(task: Task, answer: str) -> dict:
+    passed = _norm(answer) == _norm(task.expected)
+    if passed:
+        outcome = "correct"
+    else:
+        outcome = "abstain" if is_abstain(answer) else "wrong"
     return {
         "task_id": task.id,
         "prompt": task.prompt,
         "expected": task.expected,
         "answer": answer,
-        "pass": _norm(answer) == _norm(task.expected),
+        "pass": passed,
+        "outcome": outcome,   # correct | abstain | wrong (metric-agnostic)
     }
 
 

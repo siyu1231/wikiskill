@@ -18,6 +18,7 @@ from .demo import write_demo_tasks
 from .doctor import checks as doctor_checks
 from .doctor import report as doctor_report
 from .harness import BackendRollout, load_tasks, split_tasks
+from .metrics import select_stats
 from .orchestrator import Orchestrator
 from .runners import make_runner
 from .skills import SkillSet
@@ -31,8 +32,9 @@ DEFAULTS = {
     "seed": 42,
     "max_turns": 15,
     "run_budget": 300,
-    "workers": 1,
     "toolsets": "",
+    "workers": 1,
+    "metric": {"name": "exact"},
     "llm": {"base_url": "", "api_key": "", "model": ""},
 }
 
@@ -77,9 +79,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
         n = write_demo_tasks(ws / "tasks.jsonl")
 
+    if args.metric == "selective":
+        metric = {"name": "selective", "abstain": args.abstain_penalty,
+                  "wrong": args.wrong_penalty}
+    else:
+        metric = {"name": "exact"}
     cfg = {**DEFAULTS, "backend": args.backend, "seed": args.seed,
            "toolsets": args.toolsets or "",
-           "workers": max(1, args.workers or 1)}
+           "workers": max(1, args.workers or 1),
+           "metric": metric}
     _save_cfg(ws, cfg)
 
     backend = get_backend(cfg["backend"])
@@ -93,6 +101,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"toolsets  : {cfg['toolsets']}  (adapter vocabulary)")
     if cfg["workers"] > 1:
         print(f"workers   : {cfg['workers']} (parallel rollout)")
+    if cfg["metric"]["name"] == "selective":
+        print(f"metric    : selective (abstain=-{cfg['metric']['abstain']:g} "
+              f"wrong=-{cfg['metric']['wrong']:g})")
     print(f"tasks     : {n} total -> train {len(train)} / val {len(val)} "
           f"(seed {cfg['seed']}, held-out for gating)")
     print("next      : wikiskill evolve " + str(args.dir))
@@ -126,6 +137,18 @@ def cmd_status(args: argparse.Namespace) -> int:
           + (f"    workers: {cfg['workers']}" if int(cfg.get("workers") or 1) > 1 else ""))
     print(f"raw/      : {len(raw)} traces  "
           + ", ".join(f"{k}:{v}" for k, v in sorted(per_iter.items())))
+    metric = cfg.get("metric") or {"name": "exact"}
+    if metric.get("name") == "selective":
+        print(f"metric    : selective (abstain=-{float(metric.get('abstain', 0.25)):g} "
+              f"wrong=-{float(metric.get('wrong', 1.0)):g})")
+        latest = max(per_iter) if per_iter else None   # iter-XXXX zero-padded -> sort ok
+        if latest:
+            traces = [json.loads(p.read_text(encoding="utf-8"))
+                      for p in raw if p.parent.name == latest]
+            st = select_stats(traces)
+            print(f"selective : {latest}  coverage={st['coverage']:.3f} "
+                  f"abstain={st['abstain_rate']:.3f} cond_acc={st['cond_acc']:.3f}  "
+                  f"(correct {st['correct']} / abstain {st['abstain']} / wrong {st['wrong']})")
     print(f"wiki/     : {len(w.list_patterns())} patterns, "
           f"logs {len(w.read_wiki('logs.md') or '')} chars")
     print(f"skills/   : {', '.join(skills.names()) or '(none)'}")
@@ -157,6 +180,14 @@ def cmd_evolve(args: argparse.Namespace) -> int:
         cfg["toolsets"] = args.toolsets
     toolsets = cfg.get("toolsets") or None   # None -> adapter default
 
+    metric = dict(cfg.get("metric") or {"name": "exact"})
+    if args.metric:
+        metric["name"] = args.metric
+    if args.abstain_penalty is not None:
+        metric["abstain"] = args.abstain_penalty
+    if args.wrong_penalty is not None:
+        metric["wrong"] = args.wrong_penalty
+
     w = Workspace.open(str(ws))
     backend = get_backend(cfg["backend"])
     backend.bootstrap(str(ws))
@@ -171,12 +202,14 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     runner = make_runner(cfg["runner"], backend, str(ws), cfg.get("llm"),
                          toolsets=toolsets)
     skills = SkillSet(w.skills_dir)
-    maintainer = WikiMaintainer(runner, w)
-    proposer = SkillProposer(runner, w, skills)
-    orch = Orchestrator(w, maintainer, proposer, rollout)
+    maintainer = WikiMaintainer(runner, w, metric=metric)
+    proposer = SkillProposer(runner, w, skills, metric=metric)
+    orch = Orchestrator(w, maintainer, proposer, rollout, metric=metric)
 
     print(f"evolve    : {ws}  backend={cfg['backend']} runner={cfg['runner']} workers={workers}"
-          + (f" toolsets={toolsets}" if toolsets else ""))
+          + (f" toolsets={toolsets}" if toolsets else "")
+          + (f" metric={metric.get('name', 'exact')}"
+             if metric.get("name", "exact") != "exact" else ""))
     print(f"data      : train {len(train)} / val {len(val)}   iters<= {args.iters}")
     t0 = _now()
     res = orch.evolve(train, val, max_iters=args.iters)
@@ -251,6 +284,16 @@ def main(argv: list[str] | None = None) -> int:
     pi.add_argument("--workers", type=int, default=0,
                     help="parallel rollout workers for evolve (default 1 = serial; "
                          "subprocess-per-task adapters scale linearly)")
+    pi.add_argument("--metric", choices=["exact", "selective"], default="exact",
+                    help="exact = paper accuracy (default); selective = "
+                         "abstention-aware (+1 correct, -abstain-penalty abstain, "
+                         "-wrong-penalty wrong) — lets the skill learn to flag "
+                         "uncertain cases")
+    pi.add_argument("--abstain-penalty", type=float, default=0.25,
+                    dest="abstain_penalty",
+                    help="selective metric: cost of an explicit abstention (default 0.25)")
+    pi.add_argument("--wrong-penalty", type=float, default=1.0, dest="wrong_penalty",
+                    help="selective metric: cost of a wrong answer (default 1.0)")
     pi.add_argument("--force", action="store_true")
 
     ps = sub.add_parser("status", help="show workspace layers, skills, gating history")
@@ -270,6 +313,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="override workspace toolsets for this run")
     pe.add_argument("--workers", type=int,
                     help="parallel rollout workers (overrides workspace workers)")
+    pe.add_argument("--metric", choices=["exact", "selective"], dest="metric",
+                    help="override workspace metric for this run")
+    pe.add_argument("--abstain-penalty", type=float, dest="abstain_penalty",
+                    help="selective metric: abstention cost override")
+    pe.add_argument("--wrong-penalty", type=float, dest="wrong_penalty",
+                    help="selective metric: wrong-answer cost override")
     pe.add_argument("-q", "--quiet", action="store_true")
 
     pr = sub.add_parser("run-task", help="run one task once (debug rollout)")

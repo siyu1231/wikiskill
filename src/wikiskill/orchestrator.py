@@ -11,7 +11,7 @@ from typing import Callable
 
 from .agents import SkillProposer, WikiMaintainer, stratified_sample
 from .harness import Task
-from .metrics import accuracy
+from .metrics import score, select_stats
 from .skills import Proposal, SkillSet
 from .workspace import Workspace
 
@@ -45,12 +45,29 @@ class EvolutionResult:
 
 class Orchestrator:
     def __init__(self, ws: Workspace, maintainer: WikiMaintainer, proposer: SkillProposer,
-                 rollout: RolloutFn):
+                 rollout: RolloutFn, metric: dict | None = None):
         self.ws = ws
         self.skills = SkillSet(ws.skills_dir)
         self.maintainer = maintainer
         self.proposer = proposer
         self.rollout = rollout
+        # None / {"name":"exact"} -> paper metric; {"name":"selective",...} -> abstention-aware
+        self.metric = metric
+
+    def _score(self, traces: list[dict]) -> float:
+        return score(traces, self.metric)
+
+    def _stats_extra(self, traces: list[dict]) -> tuple[str, str]:
+        """(audit multiline, log compact) tri-metric lines; empty under exact."""
+        if (self.metric or {}).get("name", "exact") != "selective":
+            return "", ""
+        st = select_stats(traces)
+        audit = (f"\n- selective: correct={st['correct']} abstain={st['abstain']} "
+                 f"wrong={st['wrong']} | coverage={st['coverage']:.3f} "
+                 f"abstain_rate={st['abstain_rate']:.3f} cond_acc={st['cond_acc']:.3f}")
+        log = (f"  correct={st['correct']} abstain={st['abstain']} wrong={st['wrong']}"
+               f" coverage={st['coverage']:.2f} cond_acc={st['cond_acc']:.2f}")
+        return audit, log
 
     def _run_split(self, tasks: list[Task], iteration: int, split: str) -> list[dict]:
         ctx = self.skills.full_context()
@@ -62,7 +79,7 @@ class Orchestrator:
     def evolve(self, train: list[Task], val: list[Task], max_iters: int = 10) -> EvolutionResult:
         # line 2: baseline validation with empty skill set
         baseline_traces = self._run_split(val, 0, "val")
-        r_best = accuracy(baseline_traces)
+        r_best = self._score(baseline_traces)
         result = EvolutionResult(r_best=r_best, baseline=r_best)
 
         for k in range(1, max_iters + 1):
@@ -81,7 +98,7 @@ class Orchestrator:
                 self.ws.append_skill_impact(f"### Iteration {k}\n- outcome: NoProposal")
                 result.iterations.append(IterationReport(
                     k=k, proposal=None, diff=None, val_score=r_best, r_best=r_best,
-                    accepted=False, train_score=accuracy(train_traces),
+                    accepted=False, train_score=self._score(train_traces),
                     patches_applied=patches, notes="proposer returned no proposal"))
                 continue
             snap = self.skills.snapshot()
@@ -93,36 +110,40 @@ class Orchestrator:
                     f"- outcome: Rejected (invalid proposal: {e})")
                 result.iterations.append(IterationReport(
                     k=k, proposal=proposal, diff=None, val_score=r_best, r_best=r_best,
-                    accepted=False, train_score=accuracy(train_traces),
+                    accepted=False, train_score=self._score(train_traces),
                     patches_applied=patches, notes=f"invalid: {e}"))
                 continue
             # line 12: validation with candidate skills
             val_traces = self._run_split(val, k, "val")
-            score = accuracy(val_traces)
+            val_score = self._score(val_traces)
             # line 13-17: strict-improvement gate, skills-only rollback
-            accepted = score > r_best
+            accepted = val_score > r_best
             if accepted:
-                r_best = score
+                r_best = val_score
             else:
                 self.skills.restore(snap)
             # line 18: audit trail (harness writes; wiki never rolled back)
-            self.ws.append_skill_impact(self._impact_entry(k, proposal, diff, score, accepted, r_best))
-            self.ws.append_log(f"- validation: {score:.3f} "
-                               f"({'Accepted' if accepted else 'Rejected'}), R_best={r_best:.3f}")
+            audit_extra, log_extra = self._stats_extra(val_traces)
+            self.ws.append_skill_impact(
+                self._impact_entry(k, proposal, diff, val_score, accepted, r_best, audit_extra))
+            self.ws.append_log(f"- validation: {val_score:.3f} "
+                               f"({'Accepted' if accepted else 'Rejected'}), "
+                               f"R_best={r_best:.3f}{log_extra}")
             result.iterations.append(IterationReport(
-                k=k, proposal=proposal, diff=diff, val_score=score, r_best=r_best,
-                accepted=accepted, train_score=accuracy(train_traces),
+                k=k, proposal=proposal, diff=diff, val_score=val_score, r_best=r_best,
+                accepted=accepted, train_score=self._score(train_traces),
                 patches_applied=patches))
         result.r_best = r_best
         return result
 
     @staticmethod
-    def _impact_entry(k: int, p: Proposal, diff: str, score: float, accepted: bool, r_best: float) -> str:
+    def _impact_entry(k: int, p: Proposal, diff: str, score: float, accepted: bool,
+                      r_best: float, extra: str = "") -> str:
         return (
             f"### Iteration {k}\n"
             f"{p.to_markdown()}\n"
             f"```diff\n{diff.rstrip()}\n```\n"
-            f"- val_score: {score:.4f}\n"
+            f"- val_score: {score:.4f}{extra}\n"
             f"- R_best after gate: {r_best:.4f}\n"
             f"- outcome: {'Accepted' if accepted else 'Rejected'}"
         )

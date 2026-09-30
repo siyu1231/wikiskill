@@ -50,3 +50,23 @@ below exactly as written; it is authoritative procedural knowledge. Answer in th
 OUTCOME_SUMMARY_PROMPT = """## Training outcomes (iteration {iteration})
 {summary}
 """
+
+
+def scoring_note(metric: dict | None) -> str:
+    """Tell the actors the EXACT scalar the gate compares — otherwise the proposer
+    optimizes its imagination of the metric instead of the metric itself."""
+    if (metric or {}).get("name", "exact") != "selective":
+        return ""
+    lam = float(metric.get("abstain", 0.25))   # type: ignore[union-attr]
+    mu = float(metric.get("wrong", 1.0))       # type: ignore[union-attr]
+    return (
+        "\n## Scoring rule (selective metric)\n"
+        f"Each task scores +1 for a correct answer, -{lam:g} for an explicit abstention "
+        f"(an answer that declines to give a verdict, e.g. `verdict=unknown` / 不确定), "
+        f"-{mu:g} for a wrong answer; the run score is the mean over tasks, and proposals "
+        "are accepted only if it strictly increases.\n"
+        "Consequence: answering correctly is best; an abstention is better than a wrong "
+        f"guess but worse than an answer; answering nothing on every task scores -{lam:g} "
+        "and can never win. Teach the agent to abstain ONLY on cases where it would "
+        "likely be wrong, and to keep answering confidently everywhere else.\n"
+    )

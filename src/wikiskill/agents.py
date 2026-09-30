@@ -5,7 +5,7 @@ import json
 from typing import Callable
 
 from .llm import LLM, extract_json
-from .prompts import MAINTAINER_SYSTEM, PROPOSER_SYSTEM, OUTCOME_SUMMARY_PROMPT
+from .prompts import MAINTAINER_SYSTEM, PROPOSER_SYSTEM, OUTCOME_SUMMARY_PROMPT, scoring_note
 from .skills import Proposal, ProposalError, SkillSet
 from .workspace import TRACE_CAP, Workspace, WorkspaceError
 
@@ -18,6 +18,17 @@ PROPOSER_MAX_TURNS = 12
 def stratified_sample(traces: list[dict]) -> list[dict]:
     failing = [t for t in traces if not t.get("pass")]
     passing = [t for t in traces if t.get("pass")]
+    # Diversify the failing bucket by outcome (correct|abstain|wrong) so a wall of
+    # abstentions can't crowd out real errors (and vice versa) inside the ≤5 budget.
+    groups: dict[str, list[dict]] = {}
+    for t in failing:
+        groups.setdefault(str(t.get("outcome") or "wrong"), []).append(t)
+    if len(groups) > 1:
+        failing = []
+        while any(groups.values()):
+            for g in groups.values():
+                if g:
+                    failing.append(g.pop(0))
     picked = failing[:MAX_FAILING] + passing[:MAX_PASSING]
     out = []
     for t in picked:
@@ -41,9 +52,10 @@ def _compact(traces: list[dict], cap: int = TRACE_CAP) -> str:
 class WikiMaintainer:
     """W'_k <- M_WM(W_{k-1}, T_sample,k)  (paper §3.2.2, one LLM call)."""
 
-    def __init__(self, llm: LLM, ws: Workspace):
+    def __init__(self, llm: LLM, ws: Workspace, metric: dict | None = None):
         self.llm = llm
         self.ws = ws
+        self.metric = metric
 
     def _wiki_context(self) -> str:
         parts = []
@@ -60,7 +72,8 @@ class WikiMaintainer:
         user = (
             f"## Current wiki\n{self._wiki_context()}\n\n"
             f"## Sampled traces (stratified)\n{_compact(sampled)}\n\n"
-            "Return the JSON patches now."
+            + scoring_note(self.metric)
+            + "Return the JSON patches now."
         )
         reply = self.llm.chat([{"role": "user", "content": user}], system=MAINTAINER_SYSTEM)
         data = extract_json(reply)
@@ -106,14 +119,17 @@ class WikiMaintainer:
 class SkillProposer:
     """P_k <- M_P(W'_k, S_{k-1}, T_train,k)  (paper §3.2.3, ReAct with read_file)."""
 
-    def __init__(self, llm: LLM, ws: Workspace, skills: SkillSet):
+    def __init__(self, llm: LLM, ws: Workspace, skills: SkillSet,
+                 metric: dict | None = None):
         self.llm = llm
         self.ws = ws
         self.skills = skills
+        self.metric = metric
 
     def propose(self, train_traces: list[dict], iteration: int) -> Proposal | None:
         summary = "\n".join(
             f"- {t.get('task_id', '?')}: {'PASS' if t.get('pass') else 'FAIL'}"
+            f" [{t.get('outcome', '?')}]"
             f" | pred={t.get('answer')!r} gt={t.get('expected')!r}"
             for t in train_traces
         ) or "(no traces)"
@@ -124,6 +140,7 @@ class SkillProposer:
                 f"## wiki/skill-impact.md\n{self.ws.read_skill_impact()[:TRACE_CAP]}\n\n"
                 f"## active skills\n{(self.skills.full_context() or '(none)')[:TRACE_CAP]}\n\n"
                 + OUTCOME_SUMMARY_PROMPT.format(iteration=iteration, summary=summary)
+                + scoring_note(self.metric)
             ),
         }]
         for _ in range(PROPOSER_MAX_TURNS):

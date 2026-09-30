@@ -112,7 +112,11 @@ WARN（判分风险、N 偏小）逐条看过再决定。
    产物落盘。**工具集按任务类型配置**：纯文本任务用 adapter 默认即可；**图片/多模态
    任务必须** `--toolsets terminal,file,vision`（hermes 词汇表；其他 adapter 用自家
    语法，值写进 workspace.json，考生、医生、药剂师全程一致）。不配 = 最小权限
-   （无 vision、无 web），考生只能看到文本，图片题会全错。
+   （无 vision、无 web），考生只能看到文本，图片题会全错。**评分指标**：默认
+   `--metric exact`（论文 accuracy）；**任务允许模型弃权/自报不确定时**用
+   `--metric selective`（+1 答对、−λ 弃权默认 0.25、−μ 答错默认 1.0，
+   `--abstain-penalty/--wrong-penalty` 可调），status 会显示
+   coverage/abstain/cond_acc 三元统计，弃权策略由演化自己学（详见 design.md §8.4）。
 4. **（规则 B）向用户报告冒烟结果，说明真实 evolve 的预估成本**（实测 ~8 分钟/3 iters、
    ~50 次 agent 调用），**用户明确同意后**再 `init <ws-real> --tasks <file>
    --backend hermes` + `evolve <ws-real> --iters N`（后台跑）→ completion criterion:
@@ -133,6 +137,9 @@ WARN（判分风险、N 偏小）逐条看过再决定。
 - **工具集（toolsets）没配 = 考生只有 terminal+file**：图片任务不加 vision 考生就
   是瞎猜（实测 `ANSWER: NO_VISION`），演化出的 skill 全是垃圾。intake 时先问清
   任务类型，`init --toolsets` 一次配好；`doctor`/`status` 会显示当前值。
+- **三值输出（正/负/不确定）必须配 `--metric selective`**：exact 指标下弃权=答错，
+  演化只会把不确定越压越死且把错判当弃权罚；selective 下弃权(−0.25)比答错(−1)
+  便宜、λ 越小越敢弃权。题目 `expected` 仍全是确定标签——不确定是模型侧行为。
 - evolve 有进度输出（每个任务 PASS/FAIL + 耗时），安静模式用 `-q`。
 - `evolve`/`run-task` 会先幂等 bootstrap 隔离 profile（`.hermes-home/`），不碰全局
   hermes 配置。
