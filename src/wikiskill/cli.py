@@ -31,6 +31,7 @@ DEFAULTS = {
     "seed": 42,
     "max_turns": 15,
     "run_budget": 300,
+    "workers": 1,
     "toolsets": "",
     "llm": {"base_url": "", "api_key": "", "model": ""},
 }
@@ -77,7 +78,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         n = write_demo_tasks(ws / "tasks.jsonl")
 
     cfg = {**DEFAULTS, "backend": args.backend, "seed": args.seed,
-           "toolsets": args.toolsets or ""}
+           "toolsets": args.toolsets or "",
+           "workers": max(1, args.workers or 1)}
     _save_cfg(ws, cfg)
 
     backend = get_backend(cfg["backend"])
@@ -89,6 +91,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"backend   : {cfg['backend']} (available: {', '.join(available_backends())})")
     if cfg["toolsets"]:
         print(f"toolsets  : {cfg['toolsets']}  (adapter vocabulary)")
+    if cfg["workers"] > 1:
+        print(f"workers   : {cfg['workers']} (parallel rollout)")
     print(f"tasks     : {n} total -> train {len(train)} / val {len(val)} "
           f"(seed {cfg['seed']}, held-out for gating)")
     print("next      : wikiskill evolve " + str(args.dir))
@@ -118,7 +122,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     print(f"workspace : {ws}")
     print(f"backend   : {cfg['backend']}    runner: {cfg['runner']}    seed: {cfg['seed']}"
-          + (f"    toolsets: {cfg['toolsets']}" if cfg.get("toolsets") else ""))
+          + (f"    toolsets: {cfg['toolsets']}" if cfg.get("toolsets") else "")
+          + (f"    workers: {cfg['workers']}" if int(cfg.get("workers") or 1) > 1 else ""))
     print(f"raw/      : {len(raw)} traces  "
           + ", ".join(f"{k}:{v}" for k, v in sorted(per_iter.items())))
     print(f"wiki/     : {len(w.list_patterns())} patterns, "
@@ -159,9 +164,10 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     tasks = load_tasks(ws / cfg["tasks"])
     train, val = split_tasks(tasks, seed=cfg["seed"])
 
+    workers = args.workers or int(cfg.get("workers") or 1)
     rollout = BackendRollout(backend, str(ws), max_turns=cfg["max_turns"],
                              run_budget=cfg["run_budget"], verbose=not args.quiet,
-                             toolsets=toolsets)
+                             toolsets=toolsets, workers=workers)
     runner = make_runner(cfg["runner"], backend, str(ws), cfg.get("llm"),
                          toolsets=toolsets)
     skills = SkillSet(w.skills_dir)
@@ -169,7 +175,7 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     proposer = SkillProposer(runner, w, skills)
     orch = Orchestrator(w, maintainer, proposer, rollout)
 
-    print(f"evolve    : {ws}  backend={cfg['backend']} runner={cfg['runner']}"
+    print(f"evolve    : {ws}  backend={cfg['backend']} runner={cfg['runner']} workers={workers}"
           + (f" toolsets={toolsets}" if toolsets else ""))
     print(f"data      : train {len(train)} / val {len(val)}   iters<= {args.iters}")
     t0 = _now()
@@ -242,6 +248,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="toolset vocabulary for the examinee, in the adapter's own "
                          "syntax (e.g. hermes: terminal,file,vision). Empty = adapter "
                          "default (least privilege: no web/skills)")
+    pi.add_argument("--workers", type=int, default=0,
+                    help="parallel rollout workers for evolve (default 1 = serial; "
+                         "subprocess-per-task adapters scale linearly)")
     pi.add_argument("--force", action="store_true")
 
     ps = sub.add_parser("status", help="show workspace layers, skills, gating history")
@@ -259,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--run-budget", type=int, dest="run_budget")
     pe.add_argument("--toolsets", dest="toolsets",
                     help="override workspace toolsets for this run")
+    pe.add_argument("--workers", type=int,
+                    help="parallel rollout workers (overrides workspace workers)")
     pe.add_argument("-q", "--quiet", action="store_true")
 
     pr = sub.add_parser("run-task", help="run one task once (debug rollout)")

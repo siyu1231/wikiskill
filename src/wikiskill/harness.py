@@ -107,7 +107,7 @@ class BackendRollout:
     def __init__(self, backend: AgentBackend, ws_root: str,
                  max_turns: int = 15, run_budget: int = 300,
                  workdir: str | None = None, verbose: bool = True,
-                 toolsets: str | None = None):
+                 toolsets: str | None = None, workers: int = 1):
         self.backend = backend
         self.ws_root = ws_root
         self.max_turns = max_turns
@@ -116,42 +116,69 @@ class BackendRollout:
         self.verbose = verbose
         # None = adapter's own default (core never encodes adapter vocab)
         self.toolsets = toolsets
+        # >1: fan out backend.run calls (subprocess-per-task adapters make this
+        # safe: each task owns its runs/<tag>/ dir). Trace order stays = task
+        # order regardless of completion order.
+        self.workers = max(1, int(workers))
+
+    def _run_one(self, task: Task, skills_ctx: str, iteration: int,
+                 split: str) -> dict:
+        prompt = build_prompt(skills_ctx, task)
+        tag = f"iter-{iteration:04d}-{split}-{task.id}"
+        # harness-managed runs/ layout (design.md §8): every backend gets
+        # the same on-disk artifacts for auditability, adapters only exec.
+        run_dir = os.path.join(self.ws_root, "runs", tag)
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, "query.txt"), "w", encoding="utf-8") as f:
+            f.write(prompt)
+        res = self.backend.run(self.ws_root, prompt, tag=tag,
+                               toolsets=self.toolsets,
+                               max_turns=self.max_turns, run_budget=self.run_budget,
+                               workdir=self.workdir)
+        stdout_path = res.stdout_path or os.path.join(run_dir, "stdout.txt")
+        if not res.stdout_path:
+            with open(stdout_path, "w", encoding="utf-8") as f:
+                f.write(res.stdout)
+        answer = parse_answer(res.stdout)
+        trace = make_trace(task, answer)
+        trace["run"] = {
+            "backend": getattr(self.backend, "name", "?"),
+            "tag": tag,
+            "exit": res.exit_code,
+            "duration_s": res.duration_s,
+            "session": res.session_file,
+        }
+        return trace
+
+    def _report(self, trace: dict, iteration: int, split: str) -> None:
+        mark = "PASS" if trace["pass"] else "FAIL"
+        print(f"  [{split} {iteration}] {trace['task_id']} {mark} "
+              f"ans={trace['answer']!r} ({trace['run']['duration_s']}s)")
 
     def __call__(self, tasks: list[Task], skills_ctx: str, iteration: int, split: str) -> list[dict]:
         os.makedirs(self.workdir, exist_ok=True)
-        traces: list[dict] = []
-        for task in tasks:
-            prompt = build_prompt(skills_ctx, task)
-            tag = f"iter-{iteration:04d}-{split}-{task.id}"
-            # harness-managed runs/ layout (design.md §8): every backend gets
-            # the same on-disk artifacts for auditability, adapters only exec.
-            run_dir = os.path.join(self.ws_root, "runs", tag)
-            os.makedirs(run_dir, exist_ok=True)
-            with open(os.path.join(run_dir, "query.txt"), "w", encoding="utf-8") as f:
-                f.write(prompt)
-            res = self.backend.run(self.ws_root, prompt, tag=tag,
-                                   toolsets=self.toolsets,
-                                   max_turns=self.max_turns, run_budget=self.run_budget,
-                                   workdir=self.workdir)
-            stdout_path = res.stdout_path or os.path.join(run_dir, "stdout.txt")
-            if not res.stdout_path:
-                with open(stdout_path, "w", encoding="utf-8") as f:
-                    f.write(res.stdout)
-            answer = parse_answer(res.stdout)
-            trace = make_trace(task, answer)
-            trace["run"] = {
-                "backend": getattr(self.backend, "name", "?"),
-                "tag": tag,
-                "exit": res.exit_code,
-                "duration_s": res.duration_s,
-                "session": res.session_file,
-            }
-            traces.append(trace)
-            if self.verbose:
-                mark = "PASS" if trace["pass"] else "FAIL"
-                print(f"  [{split} {iteration}] {task.id} {mark} "
-                      f"ans={answer!r} ({res.duration_s}s)")
-        return traces
+        if self.workers == 1 or len(tasks) <= 1:
+            # serial: report each task as it finishes (live progress feedback)
+            traces = []
+            for t in tasks:
+                trace = self._run_one(t, skills_ctx, iteration, split)
+                traces.append(trace)
+                if self.verbose:
+                    self._report(trace, iteration, split)
+            return traces
+        # parallel: report live as tasks complete; collect in TASK order so
+        # downstream (save_trace, gating) never depends on completion order
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        ordered: list[dict | None] = [None] * len(tasks)
+        with ThreadPoolExecutor(max_workers=min(self.workers, len(tasks))) as ex:
+            futs = {ex.submit(self._run_one, t, skills_ctx, iteration, split): i
+                    for i, t in enumerate(tasks)}
+            for fut in as_completed(futs):
+                i = futs[fut]
+                ordered[i] = fut.result()
+                if self.verbose:
+                    self._report(ordered[i], iteration, split)
+        return [t for t in ordered if t is not None]
 
 
 def _norm(s: str) -> str:
