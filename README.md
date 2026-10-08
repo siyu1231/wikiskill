@@ -1,5 +1,7 @@
 # wikiskill
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Python implementation of **WikiSkill: Compiling Agent Experience into Persistent Knowledge for Skill Evolution** ([arXiv:2608.27454](https://arxiv.org/abs/2608.27454), Tang et al., Google Research + Virginia Tech, 2026-08-27).
 
 Google Research has **not** released official code for this paper. This project is an independent reimplementation whose goal differs from the two existing community ports:
